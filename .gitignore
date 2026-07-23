@@ -1,0 +1,10 @@
+bin/
+release/
+/Releases/
+*.previous
+AcerBatterySaver.exe
+Acer-Battery-Saver-Setup-*.exe
+config.json
+battery-saver.log
+battery-saver.log.old
+restore-state.json
