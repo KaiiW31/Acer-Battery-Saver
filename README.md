@@ -6,7 +6,7 @@ The executable and notification-area icon use the custom transparent battery-and
 
 ## Install
 
-Download and run `Acer-Battery-Saver-Setup-v1.0.0.exe` from the private GitHub
+Download and run the latest `Acer-Battery-Saver-Setup` executable from the private GitHub
 Release. It installs for the current Windows account, adds a Start Menu shortcut,
 registers the app under Windows **Installed apps**, starts the tray app, and
 enables startup with Windows. Administrator access is not required for the
@@ -24,7 +24,9 @@ build scripts.
 - Leaves display brightness untouched.
 - Enables native Windows Energy Saver at every battery level, using its aggressive policy.
 - Keeps Energy Saver's brightness scaling at 100%, so it does not dim your already-low brightness.
-- Changes the internal display from its current rate (normally 165 Hz) to 60 Hz.
+- Saves each active physical monitor independently, then changes each one to 60 Hz.
+- Restores each monitor's own previous refresh rate (for example, laptop 165 Hz
+  and external monitor 144 Hz), even if Windows display topology changes temporarily.
 - Creates a temporary, reversible Windows power plan with:
   - CPU maximum set to 55% on battery;
   - CPU boost disabled on battery;

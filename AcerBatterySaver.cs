@@ -17,8 +17,8 @@ using System.Web.Script.Serialization;
 [assembly: AssemblyDescription("Automatic battery-saving tray app for Acer Predator PHN16-71")]
 [assembly: AssemblyCompany("KaiiW31")]
 [assembly: AssemblyProduct("Acer Battery Saver")]
-[assembly: AssemblyVersion("1.0.0.0")]
-[assembly: AssemblyFileVersion("1.0.0.0")]
+[assembly: AssemblyVersion("1.0.1.0")]
+[assembly: AssemblyFileVersion("1.0.1.0")]
 
 internal sealed class Config {
     public bool AutomaticSwitching = true;
@@ -38,9 +38,19 @@ internal sealed class Config {
 internal sealed class SavedState {
     public string OriginalPowerScheme;
     public int RefreshRate;
+    public List<DisplayState> Displays = new List<DisplayState>();
     public bool BluetoothWasEnabled;
     public List<int> SuspendedProcessIds = new List<int>();
     public DateTime ActivatedAt;
+}
+
+internal sealed class DisplayState {
+    public string DeviceName;
+    public string MonitorId;
+    public string MonitorHardwareId;
+    public int Width;
+    public int Height;
+    public int RefreshRate;
 }
 
 internal static class Native {
@@ -82,10 +92,79 @@ internal static class Native {
         public int dmICMMethod, dmICMIntent, dmMediaType, dmDitherType, dmReserved1, dmReserved2;
         public int dmPanningWidth, dmPanningHeight;
     }
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Ansi)]
+    internal struct DISPLAY_DEVICE {
+        public int cb;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string DeviceName;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)] public string DeviceString;
+        public int StateFlags;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)] public string DeviceID;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)] public string DeviceKey;
+    }
+    [StructLayout(LayoutKind.Sequential)] internal struct LUID { public uint LowPart; public int HighPart; }
+    [StructLayout(LayoutKind.Sequential)] internal struct DISPLAYCONFIG_RATIONAL { public uint Numerator, Denominator; }
+    [StructLayout(LayoutKind.Sequential)] internal struct DISPLAYCONFIG_PATH_SOURCE_INFO {
+        public LUID adapterId; public uint id, modeInfoIdx, statusFlags;
+    }
+    [StructLayout(LayoutKind.Sequential)] internal struct DISPLAYCONFIG_PATH_TARGET_INFO {
+        public LUID adapterId; public uint id, modeInfoIdx, outputTechnology, rotation, scaling;
+        public DISPLAYCONFIG_RATIONAL refreshRate;
+        public uint scanLineOrdering;
+        [MarshalAs(UnmanagedType.Bool)] public bool targetAvailable;
+        public uint statusFlags;
+    }
+    [StructLayout(LayoutKind.Sequential)] internal struct DISPLAYCONFIG_PATH_INFO {
+        public DISPLAYCONFIG_PATH_SOURCE_INFO sourceInfo;
+        public DISPLAYCONFIG_PATH_TARGET_INFO targetInfo;
+        public uint flags;
+    }
+    [StructLayout(LayoutKind.Sequential)] internal struct POINTL { public int x, y; }
+    [StructLayout(LayoutKind.Sequential)] internal struct DISPLAYCONFIG_2DREGION { public uint cx, cy; }
+    [StructLayout(LayoutKind.Sequential)] internal struct RECTL { public int left, top, right, bottom; }
+    [StructLayout(LayoutKind.Sequential)] internal struct DISPLAYCONFIG_VIDEO_SIGNAL_INFO {
+        public ulong pixelRate;
+        public DISPLAYCONFIG_RATIONAL hSyncFreq, vSyncFreq;
+        public DISPLAYCONFIG_2DREGION activeSize, totalSize;
+        public uint videoStandard, scanLineOrdering;
+    }
+    [StructLayout(LayoutKind.Sequential)] internal struct DISPLAYCONFIG_TARGET_MODE {
+        public DISPLAYCONFIG_VIDEO_SIGNAL_INFO targetVideoSignalInfo;
+    }
+    [StructLayout(LayoutKind.Sequential)] internal struct DISPLAYCONFIG_SOURCE_MODE {
+        public uint width, height, pixelFormat; public POINTL position;
+    }
+    [StructLayout(LayoutKind.Sequential)] internal struct DISPLAYCONFIG_DESKTOP_IMAGE_INFO {
+        public POINTL pathSourceSize; public RECTL desktopImageRegion, desktopImageClip;
+    }
+    [StructLayout(LayoutKind.Explicit, Size = 48)] internal struct DISPLAYCONFIG_MODE_UNION {
+        [FieldOffset(0)] public DISPLAYCONFIG_TARGET_MODE targetMode;
+        [FieldOffset(0)] public DISPLAYCONFIG_SOURCE_MODE sourceMode;
+        [FieldOffset(0)] public DISPLAYCONFIG_DESKTOP_IMAGE_INFO desktopImageInfo;
+    }
+    [StructLayout(LayoutKind.Sequential)] internal struct DISPLAYCONFIG_MODE_INFO {
+        public uint infoType, id; public LUID adapterId; public DISPLAYCONFIG_MODE_UNION modeInfo;
+    }
+    [StructLayout(LayoutKind.Sequential)] internal struct DISPLAYCONFIG_DEVICE_INFO_HEADER {
+        public uint type, size; public LUID adapterId; public uint id;
+    }
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)] internal struct DISPLAYCONFIG_SOURCE_DEVICE_NAME {
+        public DISPLAYCONFIG_DEVICE_INFO_HEADER header;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string viewGdiDeviceName;
+    }
     internal const int ENUM_CURRENT_SETTINGS = -1, CDS_UPDATEREGISTRY = 1, DISP_CHANGE_SUCCESSFUL = 0;
+    internal const int DISPLAY_DEVICE_ATTACHED_TO_DESKTOP = 1;
     internal const int DM_DISPLAYFREQUENCY = 0x400000;
+    internal const uint QDC_ONLY_ACTIVE_PATHS = 2;
+    internal const uint DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME = 1;
+    internal const uint DISPLAYCONFIG_PATH_MODE_IDX_INVALID = 0xFFFFFFFF;
+    internal const uint SDC_APPLY_SUPPLIED_SAVE_ALLOW_CHANGES = 0x6A0;
     [DllImport("user32.dll", CharSet = CharSet.Ansi)] internal static extern bool EnumDisplaySettings(string device, int mode, ref DEVMODE dm);
     [DllImport("user32.dll", CharSet = CharSet.Ansi)] internal static extern int ChangeDisplaySettings(ref DEVMODE dm, int flags);
+    [DllImport("user32.dll", CharSet = CharSet.Ansi)] internal static extern bool EnumDisplayDevices(string device, int number, ref DISPLAY_DEVICE output, int flags);
+    [DllImport("user32.dll")] internal static extern int GetDisplayConfigBufferSizes(uint flags, out uint paths, out uint modes);
+    [DllImport("user32.dll")] internal static extern int QueryDisplayConfig(uint flags, ref uint paths, [Out] DISPLAYCONFIG_PATH_INFO[] pathInfo, ref uint modes, [Out] DISPLAYCONFIG_MODE_INFO[] modeInfo, IntPtr topology);
+    [DllImport("user32.dll")] internal static extern int DisplayConfigGetDeviceInfo(ref DISPLAYCONFIG_SOURCE_DEVICE_NAME request);
+    [DllImport("user32.dll")] internal static extern int SetDisplayConfig(uint paths, DISPLAYCONFIG_PATH_INFO[] pathInfo, uint modes, DISPLAYCONFIG_MODE_INFO[] modeInfo, uint flags);
     [DllImport("ntdll.dll")] internal static extern int NtSuspendProcess(IntPtr handle);
     [DllImport("ntdll.dll")] internal static extern int NtResumeProcess(IntPtr handle);
     [DllImport("BluetoothApis.dll", CharSet = CharSet.Unicode, SetLastError = true)]
@@ -105,7 +184,7 @@ internal sealed class TrayApp : ApplicationContext {
     private readonly ToolStripMenuItem startup = new ToolStripMenuItem();
     private readonly ToolStripMenuItem status = new ToolStripMenuItem();
     private readonly string root = AppDomain.CurrentDomain.BaseDirectory;
-    private readonly string configPath, statePath, logPath;
+    private readonly string configPath, statePath, pendingDisplaysPath, logPath;
     private Config config;
     private SavedState saved;
     private bool active, transitioning, bluetoothConnectedOnAc;
@@ -114,6 +193,7 @@ internal sealed class TrayApp : ApplicationContext {
     internal TrayApp() {
         configPath = Path.Combine(root, "config.json");
         statePath = Path.Combine(root, "restore-state.json");
+        pendingDisplaysPath = Path.Combine(root, "pending-display-restore.json");
         logPath = Path.Combine(root, "battery-saver.log");
         config = Load<Config>(configPath) ?? new Config();
         Save(configPath, config);
@@ -146,6 +226,7 @@ internal sealed class TrayApp : ApplicationContext {
         if (config.StartWithWindows != IsStartupEnabled()) SetStartup(config.StartWithWindows);
 
         SystemEvents.PowerModeChanged += PowerChanged;
+        SystemEvents.DisplaySettingsChanged += DisplayChanged;
         poller = new System.Windows.Forms.Timer();
         poller.Interval = 5000;
         poller.Tick += delegate { CheckPower(); };
@@ -156,12 +237,20 @@ internal sealed class TrayApp : ApplicationContext {
     }
 
     private void PowerChanged(object sender, PowerModeChangedEventArgs e) { if (e.Mode == PowerModes.StatusChange) CheckPower(); }
+    private void DisplayChanged(object sender, EventArgs e) {
+        if (transitioning) return;
+        if (active) SetAllDisplaysRate(60); else RestorePendingDisplays();
+    }
     private void CheckPower() {
-        if (!config.AutomaticSwitching || transitioning) return;
+        if (transitioning) return;
         var line = SystemInformation.PowerStatus.PowerLineStatus;
+        if (!active && line == PowerLineStatus.Online) RestorePendingDisplays();
+        if (!config.AutomaticSwitching) return;
         if (line == PowerLineStatus.Offline && !active) SetActive(true, "power unplugged");
         else if (line == PowerLineStatus.Online && active) SetActive(false, "power connected");
-        else if (line == PowerLineStatus.Online && config.ManageBluetooth) bluetoothConnectedOnAc = HasConnectedBluetoothDevice();
+        else if (line == PowerLineStatus.Online) {
+            if (config.ManageBluetooth) bluetoothConnectedOnAc = HasConnectedBluetoothDevice();
+        }
     }
 
     private void SetActive(bool enable, string reason) {
@@ -174,10 +263,18 @@ internal sealed class TrayApp : ApplicationContext {
     }
 
     private void Enable(string reason) {
-        var s = new SavedState { OriginalPowerScheme = GetActiveScheme(), RefreshRate = GetRefreshRate(), ActivatedAt = DateTime.Now };
+        RestorePendingDisplays();
+        var displays = CaptureDisplays();
+        var s = new SavedState {
+            OriginalPowerScheme = GetActiveScheme(),
+            RefreshRate = displays.Count > 0 ? displays[0].RefreshRate : GetRefreshRate(),
+            Displays = displays,
+            ActivatedAt = DateTime.Now
+        };
         Save(statePath, s); // Crash-safe before making changes.
         saved = s;
-        Log("Enabling because " + reason + "; scheme=" + s.OriginalPowerScheme + ", refresh=" + s.RefreshRate);
+        Log("Enabling because " + reason + "; scheme=" + s.OriginalPowerScheme + ", displays=" +
+            String.Join(", ", displays.Select(d => d.MonitorHardwareId + "@" + d.RefreshRate)));
 
         string duplicateOutput = Run("powercfg.exe", "/duplicatescheme " + s.OriginalPowerScheme);
         string batteryScheme = ParseGuid(duplicateOutput);
@@ -198,7 +295,7 @@ internal sealed class TrayApp : ApplicationContext {
         RunPower("/setdcvalueindex " + batteryScheme + " SUB_SLEEP STANDBYIDLE " + (config.SleepTimeoutMinutes * 60));
         RunPower("/setactive " + batteryScheme);
 
-        SetRefreshRate(60);
+        SetAllDisplaysRate(60);
         if (config.ManageBluetooth) {
             if (bluetoothConnectedOnAc || HasConnectedBluetoothDevice()) Log("Bluetooth kept on because a Bluetooth device was connected before or during unplugging.");
             else s.BluetoothWasEnabled = SetBluetooth(false);
@@ -215,7 +312,7 @@ internal sealed class TrayApp : ApplicationContext {
         Log("Restoring because " + reason);
         ResumeSaved(s);
         if (config.ManageBluetooth && s.BluetoothWasEnabled) SetBluetooth(true);
-        if (s.RefreshRate > 0) SetRefreshRate(s.RefreshRate);
+        RestoreDisplays(s);
         if (!String.IsNullOrEmpty(s.OriginalPowerScheme)) RunPower("/setactive " + s.OriginalPowerScheme);
         DeleteTemporarySchemes(s.OriginalPowerScheme);
         if (File.Exists(statePath)) File.Delete(statePath);
@@ -240,7 +337,145 @@ internal sealed class TrayApp : ApplicationContext {
         int result = Native.ChangeDisplaySettings(ref dm, Native.CDS_UPDATEREGISTRY);
         if (result != Native.DISP_CHANGE_SUCCESSFUL) Log("Refresh " + hz + " Hz rejected (code " + result + ")");
     }
+    private List<DisplayState> CaptureDisplays() {
+        var result = new List<DisplayState>();
+        for (int i = 0; ; i++) {
+            var adapter = NewDisplayDevice();
+            if (!Native.EnumDisplayDevices(null, i, ref adapter, 0)) break;
+            if ((adapter.StateFlags & Native.DISPLAY_DEVICE_ATTACHED_TO_DESKTOP) == 0) continue;
+            var mode = NewMode();
+            if (!Native.EnumDisplaySettings(adapter.DeviceName, Native.ENUM_CURRENT_SETTINGS, ref mode)) continue;
+            var monitor = NewDisplayDevice();
+            Native.EnumDisplayDevices(adapter.DeviceName, 0, ref monitor, 0);
+            result.Add(new DisplayState {
+                DeviceName = adapter.DeviceName,
+                MonitorId = monitor.DeviceID,
+                MonitorHardwareId = GetMonitorHardwareId(monitor.DeviceID),
+                Width = mode.dmPelsWidth,
+                Height = mode.dmPelsHeight,
+                RefreshRate = mode.dmDisplayFrequency
+            });
+        }
+        return result;
+    }
+    private void SetAllDisplaysRate(int hz) {
+        foreach (var display in CaptureDisplays()) SetDisplayRate(display.DeviceName, hz);
+    }
+    private bool SetDisplayRate(string deviceName, int hz) {
+        var current = NewMode();
+        if (!Native.EnumDisplaySettings(deviceName, Native.ENUM_CURRENT_SETTINGS, ref current)) {
+            Log("Refresh query unavailable for " + deviceName);
+            return false;
+        }
+        if (current.dmDisplayFrequency == hz) return true;
+        int result = ApplyDisplayConfigRate(deviceName, hz);
+        if (result != 0) {
+            Log("DisplayConfig refresh " + hz + " Hz rejected for " + deviceName + " (Windows error " + result + ")");
+            return false;
+        }
+        Thread.Sleep(250);
+        var verified = NewMode();
+        if (!Native.EnumDisplaySettings(deviceName, Native.ENUM_CURRENT_SETTINGS, ref verified) ||
+            verified.dmDisplayFrequency != hz) {
+            Log("DisplayConfig accepted " + hz + " Hz for " + deviceName + " but verification did not match.");
+            return false;
+        }
+        Log("Refresh set: " + deviceName + " -> " + hz + " Hz");
+        return true;
+    }
+    private int ApplyDisplayConfigRate(string deviceName, int hz) {
+        for (int attempt = 0; attempt < 3; attempt++) {
+            uint pathCount, modeCount;
+            int result = Native.GetDisplayConfigBufferSizes(Native.QDC_ONLY_ACTIVE_PATHS, out pathCount, out modeCount);
+            if (result != 0) return result;
+            var paths = new Native.DISPLAYCONFIG_PATH_INFO[pathCount];
+            var modes = new Native.DISPLAYCONFIG_MODE_INFO[modeCount];
+            result = Native.QueryDisplayConfig(Native.QDC_ONLY_ACTIVE_PATHS, ref pathCount, paths, ref modeCount, modes, IntPtr.Zero);
+            if (result == 122) continue; // Topology changed between buffer sizing and query.
+            if (result != 0) return result;
+            bool found = false;
+            for (int i = 0; i < pathCount; i++) {
+                var sourceName = new Native.DISPLAYCONFIG_SOURCE_DEVICE_NAME {
+                    header = new Native.DISPLAYCONFIG_DEVICE_INFO_HEADER {
+                        type = Native.DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME,
+                        size = (uint)Marshal.SizeOf(typeof(Native.DISPLAYCONFIG_SOURCE_DEVICE_NAME)),
+                        adapterId = paths[i].sourceInfo.adapterId,
+                        id = paths[i].sourceInfo.id
+                    }
+                };
+                if (Native.DisplayConfigGetDeviceInfo(ref sourceName) != 0 ||
+                    !String.Equals(sourceName.viewGdiDeviceName, deviceName, StringComparison.OrdinalIgnoreCase)) continue;
+                paths[i].targetInfo.refreshRate = new Native.DISPLAYCONFIG_RATIONAL {
+                    Numerator = (uint)hz,
+                    Denominator = 1
+                };
+                paths[i].targetInfo.modeInfoIdx = Native.DISPLAYCONFIG_PATH_MODE_IDX_INVALID;
+                found = true;
+                break;
+            }
+            if (!found) return 1168; // ERROR_NOT_FOUND
+            return Native.SetDisplayConfig(pathCount, paths, modeCount, modes, Native.SDC_APPLY_SUPPLIED_SAVE_ALLOW_CHANGES);
+        }
+        return 122;
+    }
+    private void RestoreDisplays(SavedState state) {
+        var desired = Load<List<DisplayState>>(pendingDisplaysPath) ?? new List<DisplayState>();
+        if (state.Displays != null && state.Displays.Count > 0) {
+            foreach (var display in state.Displays) AddOrReplaceDisplay(desired, display);
+        } else if (state.RefreshRate > 0) {
+            SetRefreshRate(state.RefreshRate); // Compatibility with v1.0.0 restore snapshots.
+        }
+        SavePendingDisplays(TryRestoreDisplays(desired));
+    }
+    private void RestorePendingDisplays() {
+        var pending = Load<List<DisplayState>>(pendingDisplaysPath);
+        if (pending == null || pending.Count == 0) return;
+        SavePendingDisplays(TryRestoreDisplays(pending));
+    }
+    private List<DisplayState> TryRestoreDisplays(List<DisplayState> desired) {
+        var activeDisplays = CaptureDisplays();
+        var used = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var remaining = new List<DisplayState>();
+        foreach (var savedDisplay in desired) {
+            var target = activeDisplays.FirstOrDefault(d => !used.Contains(d.DeviceName) &&
+                !String.IsNullOrEmpty(savedDisplay.MonitorId) &&
+                String.Equals(d.MonitorId, savedDisplay.MonitorId, StringComparison.OrdinalIgnoreCase));
+            if (target == null) target = activeDisplays.FirstOrDefault(d => !used.Contains(d.DeviceName) &&
+                !String.IsNullOrEmpty(savedDisplay.MonitorHardwareId) &&
+                String.Equals(d.MonitorHardwareId, savedDisplay.MonitorHardwareId, StringComparison.OrdinalIgnoreCase));
+            if (target == null) target = activeDisplays.FirstOrDefault(d => !used.Contains(d.DeviceName) &&
+                String.Equals(d.DeviceName, savedDisplay.DeviceName, StringComparison.OrdinalIgnoreCase));
+            if (target == null || !SetDisplayRate(target.DeviceName, savedDisplay.RefreshRate)) {
+                remaining.Add(savedDisplay);
+                continue;
+            }
+            used.Add(target.DeviceName);
+            Log("Display restored: " + savedDisplay.MonitorHardwareId + " -> " + savedDisplay.RefreshRate + " Hz");
+        }
+        return remaining;
+    }
+    private void AddOrReplaceDisplay(List<DisplayState> displays, DisplayState replacement) {
+        int index = displays.FindIndex(d => SameMonitor(d, replacement));
+        if (index >= 0) displays[index] = replacement; else displays.Add(replacement);
+    }
+    private bool SameMonitor(DisplayState a, DisplayState b) {
+        if (!String.IsNullOrEmpty(a.MonitorId) && !String.IsNullOrEmpty(b.MonitorId) &&
+            String.Equals(a.MonitorId, b.MonitorId, StringComparison.OrdinalIgnoreCase)) return true;
+        return !String.IsNullOrEmpty(a.MonitorHardwareId) && !String.IsNullOrEmpty(b.MonitorHardwareId) &&
+            String.Equals(a.MonitorHardwareId, b.MonitorHardwareId, StringComparison.OrdinalIgnoreCase);
+    }
+    private void SavePendingDisplays(List<DisplayState> pending) {
+        if (pending.Count == 0) {
+            if (File.Exists(pendingDisplaysPath)) File.Delete(pendingDisplaysPath);
+        } else Save(pendingDisplaysPath, pending);
+    }
+    private string GetMonitorHardwareId(string deviceId) {
+        if (String.IsNullOrEmpty(deviceId)) return "";
+        string[] parts = deviceId.Split('\\');
+        return parts.Length >= 2 ? parts[0] + "\\" + parts[1] : deviceId;
+    }
     private Native.DEVMODE NewMode() { var dm = new Native.DEVMODE(); dm.dmDeviceName = new string('\0', 32); dm.dmFormName = new string('\0', 32); dm.dmSize = (short)Marshal.SizeOf(dm); return dm; }
+    private Native.DISPLAY_DEVICE NewDisplayDevice() { var device = new Native.DISPLAY_DEVICE(); device.cb = Marshal.SizeOf(device); return device; }
 
     private bool SetBluetooth(bool enabled) {
         string verb = enabled ? "Enable-PnpDevice" : "Disable-PnpDevice";
@@ -309,7 +544,7 @@ internal sealed class TrayApp : ApplicationContext {
     }
     private void Balloon(string title, string text) { tray.BalloonTipTitle = title; tray.BalloonTipText = text; tray.ShowBalloonTip(2500); }
     private void UpdateUi(string message) { status.Text = (active ? "ON — battery profile active" : "OFF — normal profile") + " · " + message; toggle.Text = active ? "Turn battery saver OFF" : "Turn battery saver ON"; automatic.Text = "Automatic on unplug / restore on plug"; tray.Text = active ? "Acer Battery Saver — ON" : "Acer Battery Saver — OFF"; }
-    protected override void ExitThreadCore() { SystemEvents.PowerModeChanged -= PowerChanged; if (poller != null) poller.Dispose(); tray.Visible = false; tray.Dispose(); base.ExitThreadCore(); }
+    protected override void ExitThreadCore() { SystemEvents.PowerModeChanged -= PowerChanged; SystemEvents.DisplaySettingsChanged -= DisplayChanged; if (poller != null) poller.Dispose(); tray.Visible = false; tray.Dispose(); base.ExitThreadCore(); }
 }
 
 internal static class Program {

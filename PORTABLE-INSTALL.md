@@ -1,6 +1,6 @@
 # Portable installation
 
-1. Download `Acer-Battery-Saver-v1.0.0-win-x64.zip`.
+1. Download the latest `Acer-Battery-Saver-win-x64.zip` release.
 2. Extract the ZIP to a permanent folder such as:
    `Documents\My Apps\Acer Battery Saver`
 3. Run `AcerBatterySaver.exe`.

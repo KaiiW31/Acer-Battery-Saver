@@ -8,3 +8,4 @@ config.json
 battery-saver.log
 battery-saver.log.old
 restore-state.json
+pending-display-restore.json
