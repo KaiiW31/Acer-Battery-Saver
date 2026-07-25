@@ -17,8 +17,8 @@ using System.Web.Script.Serialization;
 [assembly: AssemblyDescription("Automatic battery-saving tray app for Acer Predator PHN16-71")]
 [assembly: AssemblyCompany("KaiiW31")]
 [assembly: AssemblyProduct("Acer Battery Saver")]
-[assembly: AssemblyVersion("1.0.2.0")]
-[assembly: AssemblyFileVersion("1.0.2.0")]
+[assembly: AssemblyVersion("1.0.3.0")]
+[assembly: AssemblyFileVersion("1.0.3.0")]
 
 internal sealed class Config {
     public bool AutomaticSwitching = true;
@@ -188,8 +188,8 @@ internal sealed class TrayApp : ApplicationContext {
     private Config config;
     private SavedState saved;
     private bool active, transitioning, bluetoothConnectedOnAc;
-    private DateTime nextDisplayEnforcementUtc = DateTime.MinValue;
-    private System.Windows.Forms.Timer poller;
+    private System.Windows.Forms.Timer displayRetryTimer;
+    private int displayRetryAttempt;
 
     internal TrayApp() {
         configPath = Path.Combine(root, "config.json");
@@ -228,19 +228,19 @@ internal sealed class TrayApp : ApplicationContext {
 
         SystemEvents.PowerModeChanged += PowerChanged;
         SystemEvents.DisplaySettingsChanged += DisplayChanged;
-        poller = new System.Windows.Forms.Timer();
-        poller.Interval = 5000;
-        poller.Tick += delegate { CheckPower(); };
-        poller.Start();
         CheckPower();
         UpdateUi("Ready");
         Log("Started; automatic=" + config.AutomaticSwitching + ", battery mode already active=" + active);
     }
 
-    private void PowerChanged(object sender, PowerModeChangedEventArgs e) { if (e.Mode == PowerModes.StatusChange) CheckPower(); }
+    private void PowerChanged(object sender, PowerModeChangedEventArgs e) {
+        if (e.Mode == PowerModes.StatusChange || e.Mode == PowerModes.Resume) CheckPower();
+    }
     private void DisplayChanged(object sender, EventArgs e) {
         if (transitioning) return;
-        if (active) SetAllDisplaysRate(60); else RestorePendingDisplays();
+        if (active) {
+            if (!SetAllDisplaysRate(60)) StartDisplayRetries();
+        } else RestorePendingDisplays();
     }
     private void CheckPower() {
         if (transitioning) return;
@@ -249,10 +249,7 @@ internal sealed class TrayApp : ApplicationContext {
         if (!config.AutomaticSwitching) return;
         if (line == PowerLineStatus.Offline && !active) SetActive(true, "power unplugged");
         else if (line == PowerLineStatus.Online && active) SetActive(false, "power connected");
-        else if (line == PowerLineStatus.Offline && active && DateTime.UtcNow >= nextDisplayEnforcementUtc) {
-            nextDisplayEnforcementUtc = DateTime.UtcNow.AddSeconds(15);
-            SetAllDisplaysRate(60);
-        }
+        else if (line == PowerLineStatus.Offline && active && !SetAllDisplaysRate(60)) StartDisplayRetries();
         else if (line == PowerLineStatus.Online) {
             if (config.ManageBluetooth) bluetoothConnectedOnAc = HasConnectedBluetoothDevice();
         }
@@ -300,7 +297,7 @@ internal sealed class TrayApp : ApplicationContext {
         RunPower("/setdcvalueindex " + batteryScheme + " SUB_SLEEP STANDBYIDLE " + (config.SleepTimeoutMinutes * 60));
         RunPower("/setactive " + batteryScheme);
 
-        SetAllDisplaysRate(60);
+        bool displaysReady = SetAllDisplaysRate(60);
         if (config.ManageBluetooth) {
             if (bluetoothConnectedOnAc || HasConnectedBluetoothDevice()) Log("Bluetooth kept on because a Bluetooth device was connected before or during unplugging.");
             else s.BluetoothWasEnabled = SetBluetooth(false);
@@ -308,12 +305,14 @@ internal sealed class TrayApp : ApplicationContext {
         if (config.PauseBackgroundApps) SuspendConfigured(s);
         Save(statePath, s);
         active = true;
+        if (!displaysReady) StartDisplayRetries();
         Balloon("Battery saver on", "Windows Energy Saver, 60 Hz and the efficient hardware profile are active.");
     }
 
     private void Restore(string reason) {
         var s = saved ?? Load<SavedState>(statePath);
         if (s == null) { active = false; return; }
+        StopDisplayRetries();
         Log("Restoring because " + reason);
         ResumeSaved(s);
         if (config.ManageBluetooth && s.BluetoothWasEnabled) SetBluetooth(true);
@@ -363,8 +362,42 @@ internal sealed class TrayApp : ApplicationContext {
         }
         return result;
     }
-    private void SetAllDisplaysRate(int hz) {
-        foreach (var display in CaptureDisplays()) SetDisplayRate(display.DeviceName, hz);
+    private bool SetAllDisplaysRate(int hz) {
+        var displays = CaptureDisplays();
+        if (displays.Count == 0) return false;
+        bool success = true;
+        foreach (var display in displays) if (!SetDisplayRate(display.DeviceName, hz)) success = false;
+        return success;
+    }
+    private void StartDisplayRetries() {
+        if (!active) return;
+        if (displayRetryTimer == null) {
+            displayRetryTimer = new System.Windows.Forms.Timer();
+            displayRetryTimer.Tick += DisplayRetryTick;
+        }
+        displayRetryAttempt = 0;
+        displayRetryTimer.Stop();
+        displayRetryTimer.Interval = 5000;
+        displayRetryTimer.Start();
+        Log("Display retry scheduled after a temporary refresh-rate failure.");
+    }
+    private void DisplayRetryTick(object sender, EventArgs e) {
+        if (!active) { StopDisplayRetries(); return; }
+        if (SetAllDisplaysRate(60)) {
+            Log("Display retry confirmed 60 Hz.");
+            StopDisplayRetries();
+            return;
+        }
+        displayRetryAttempt++;
+        if (displayRetryAttempt >= 3) {
+            Log("Display retry stopped after three attempts; the next power, resume or display event will retry.");
+            StopDisplayRetries();
+            return;
+        }
+        displayRetryTimer.Interval = displayRetryAttempt == 1 ? 10000 : 15000;
+    }
+    private void StopDisplayRetries() {
+        if (displayRetryTimer != null) displayRetryTimer.Stop();
     }
     private bool SetDisplayRate(string deviceName, int hz) {
         var current = NewMode();
@@ -549,7 +582,7 @@ internal sealed class TrayApp : ApplicationContext {
     }
     private void Balloon(string title, string text) { tray.BalloonTipTitle = title; tray.BalloonTipText = text; tray.ShowBalloonTip(2500); }
     private void UpdateUi(string message) { status.Text = (active ? "ON — battery profile active" : "OFF — normal profile") + " · " + message; toggle.Text = active ? "Turn battery saver OFF" : "Turn battery saver ON"; automatic.Text = "Automatic on unplug / restore on plug"; tray.Text = active ? "Acer Battery Saver — ON" : "Acer Battery Saver — OFF"; }
-    protected override void ExitThreadCore() { SystemEvents.PowerModeChanged -= PowerChanged; SystemEvents.DisplaySettingsChanged -= DisplayChanged; if (poller != null) poller.Dispose(); tray.Visible = false; tray.Dispose(); base.ExitThreadCore(); }
+    protected override void ExitThreadCore() { SystemEvents.PowerModeChanged -= PowerChanged; SystemEvents.DisplaySettingsChanged -= DisplayChanged; if (displayRetryTimer != null) displayRetryTimer.Dispose(); tray.Visible = false; tray.Dispose(); base.ExitThreadCore(); }
 }
 
 internal static class Program {
