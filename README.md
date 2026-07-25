@@ -29,6 +29,10 @@ build scripts.
   and external monitor 144 Hz), even if Windows display topology changes temporarily.
 - Reacts to Windows plug/unplug, resume and display-topology events without a
   permanent polling timer.
+- Uses Windows' direct AC/DC power-source notification in addition to the
+  standard resume event, avoiding missed plug/unplug restoration.
+- Adds monitors activated during battery mode to the restore snapshot before
+  reducing them to 60 Hz.
 - If Windows temporarily rejects a display change during startup, retries only
   after 5, 15 and 30 seconds, stopping immediately once 60 Hz is confirmed.
 - Creates a temporary, reversible Windows power plan with:

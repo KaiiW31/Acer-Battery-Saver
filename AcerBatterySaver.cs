@@ -17,8 +17,8 @@ using System.Web.Script.Serialization;
 [assembly: AssemblyDescription("Automatic battery-saving tray app for Acer Predator PHN16-71")]
 [assembly: AssemblyCompany("KaiiW31")]
 [assembly: AssemblyProduct("Acer Battery Saver")]
-[assembly: AssemblyVersion("1.0.3.0")]
-[assembly: AssemblyFileVersion("1.0.3.0")]
+[assembly: AssemblyVersion("1.0.4.0")]
+[assembly: AssemblyFileVersion("1.0.4.0")]
 
 internal sealed class Config {
     public bool AutomaticSwitching = true;
@@ -151,6 +151,11 @@ internal static class Native {
         public DISPLAYCONFIG_DEVICE_INFO_HEADER header;
         [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string viewGdiDeviceName;
     }
+    [StructLayout(LayoutKind.Sequential, Pack = 4)] internal struct POWERBROADCAST_SETTING {
+        public Guid PowerSetting;
+        public uint DataLength;
+        public byte Data;
+    }
     internal const int ENUM_CURRENT_SETTINGS = -1, CDS_UPDATEREGISTRY = 1, DISP_CHANGE_SUCCESSFUL = 0;
     internal const int DISPLAY_DEVICE_ATTACHED_TO_DESKTOP = 1;
     internal const int DM_DISPLAYFREQUENCY = 0x400000;
@@ -158,6 +163,11 @@ internal static class Native {
     internal const uint DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME = 1;
     internal const uint DISPLAYCONFIG_PATH_MODE_IDX_INVALID = 0xFFFFFFFF;
     internal const uint SDC_APPLY_SUPPLIED_SAVE_ALLOW_CHANGES = 0x6A0;
+    internal const int WM_POWERBROADCAST = 0x218;
+    internal const int PBT_APMPOWERSTATUSCHANGE = 0xA;
+    internal const int PBT_POWERSETTINGCHANGE = 0x8013;
+    internal const int DEVICE_NOTIFY_WINDOW_HANDLE = 0;
+    internal static readonly Guid GUID_ACDC_POWER_SOURCE = new Guid("5D3E9A59-E9D5-4B00-A6BD-FF34FF516548");
     [DllImport("user32.dll", CharSet = CharSet.Ansi)] internal static extern bool EnumDisplaySettings(string device, int mode, ref DEVMODE dm);
     [DllImport("user32.dll", CharSet = CharSet.Ansi)] internal static extern int ChangeDisplaySettings(ref DEVMODE dm, int flags);
     [DllImport("user32.dll", CharSet = CharSet.Ansi)] internal static extern bool EnumDisplayDevices(string device, int number, ref DISPLAY_DEVICE output, int flags);
@@ -165,6 +175,8 @@ internal static class Native {
     [DllImport("user32.dll")] internal static extern int QueryDisplayConfig(uint flags, ref uint paths, [Out] DISPLAYCONFIG_PATH_INFO[] pathInfo, ref uint modes, [Out] DISPLAYCONFIG_MODE_INFO[] modeInfo, IntPtr topology);
     [DllImport("user32.dll")] internal static extern int DisplayConfigGetDeviceInfo(ref DISPLAYCONFIG_SOURCE_DEVICE_NAME request);
     [DllImport("user32.dll")] internal static extern int SetDisplayConfig(uint paths, DISPLAYCONFIG_PATH_INFO[] pathInfo, uint modes, DISPLAYCONFIG_MODE_INFO[] modeInfo, uint flags);
+    [DllImport("user32.dll", SetLastError = true)] internal static extern IntPtr RegisterPowerSettingNotification(IntPtr recipient, ref Guid settingGuid, int flags);
+    [DllImport("user32.dll", SetLastError = true)] [return: MarshalAs(UnmanagedType.Bool)] internal static extern bool UnregisterPowerSettingNotification(IntPtr handle);
     [DllImport("ntdll.dll")] internal static extern int NtSuspendProcess(IntPtr handle);
     [DllImport("ntdll.dll")] internal static extern int NtResumeProcess(IntPtr handle);
     [DllImport("BluetoothApis.dll", CharSet = CharSet.Unicode, SetLastError = true)]
@@ -175,6 +187,45 @@ internal static class Native {
     [DllImport("BluetoothApis.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static extern bool BluetoothFindDeviceClose(IntPtr find);
+}
+
+internal sealed class PowerNotificationWindow : NativeWindow, IDisposable {
+    private readonly Action changed;
+    private IntPtr registration;
+    internal bool IsRegistered { get { return registration != IntPtr.Zero; } }
+
+    internal PowerNotificationWindow(Action changedCallback) {
+        changed = changedCallback;
+        var parameters = new CreateParams {
+            Caption = "AcerBatterySaverPowerNotifications",
+            Parent = new IntPtr(-3) // HWND_MESSAGE
+        };
+        CreateHandle(parameters);
+        Guid source = Native.GUID_ACDC_POWER_SOURCE;
+        registration = Native.RegisterPowerSettingNotification(
+            Handle, ref source, Native.DEVICE_NOTIFY_WINDOW_HANDLE);
+    }
+
+    protected override void WndProc(ref Message message) {
+        if (message.Msg == Native.WM_POWERBROADCAST) {
+            int eventCode = message.WParam.ToInt32();
+            if (eventCode == Native.PBT_APMPOWERSTATUSCHANGE) changed();
+            else if (eventCode == Native.PBT_POWERSETTINGCHANGE && message.LParam != IntPtr.Zero) {
+                var setting = (Native.POWERBROADCAST_SETTING)Marshal.PtrToStructure(
+                    message.LParam, typeof(Native.POWERBROADCAST_SETTING));
+                if (setting.PowerSetting == Native.GUID_ACDC_POWER_SOURCE) changed();
+            }
+        }
+        base.WndProc(ref message);
+    }
+
+    public void Dispose() {
+        if (registration != IntPtr.Zero) {
+            Native.UnregisterPowerSettingNotification(registration);
+            registration = IntPtr.Zero;
+        }
+        if (Handle != IntPtr.Zero) DestroyHandle();
+    }
 }
 
 internal sealed class TrayApp : ApplicationContext {
@@ -190,6 +241,7 @@ internal sealed class TrayApp : ApplicationContext {
     private bool active, transitioning, bluetoothConnectedOnAc;
     private System.Windows.Forms.Timer displayRetryTimer;
     private int displayRetryAttempt;
+    private PowerNotificationWindow powerNotifications;
 
     internal TrayApp() {
         configPath = Path.Combine(root, "config.json");
@@ -228,6 +280,8 @@ internal sealed class TrayApp : ApplicationContext {
 
         SystemEvents.PowerModeChanged += PowerChanged;
         SystemEvents.DisplaySettingsChanged += DisplayChanged;
+        powerNotifications = new PowerNotificationWindow(CheckPower);
+        Log("Direct AC/DC notification registered=" + powerNotifications.IsRegistered);
         CheckPower();
         UpdateUi("Ready");
         Log("Started; automatic=" + config.AutomaticSwitching + ", battery mode already active=" + active);
@@ -239,6 +293,7 @@ internal sealed class TrayApp : ApplicationContext {
     private void DisplayChanged(object sender, EventArgs e) {
         if (transitioning) return;
         if (active) {
+            CaptureNewDisplaysForRestore();
             if (!SetAllDisplaysRate(60)) StartDisplayRetries();
         } else RestorePendingDisplays();
     }
@@ -249,7 +304,10 @@ internal sealed class TrayApp : ApplicationContext {
         if (!config.AutomaticSwitching) return;
         if (line == PowerLineStatus.Offline && !active) SetActive(true, "power unplugged");
         else if (line == PowerLineStatus.Online && active) SetActive(false, "power connected");
-        else if (line == PowerLineStatus.Offline && active && !SetAllDisplaysRate(60)) StartDisplayRetries();
+        else if (line == PowerLineStatus.Offline && active) {
+            CaptureNewDisplaysForRestore();
+            if (!SetAllDisplaysRate(60)) StartDisplayRetries();
+        }
         else if (line == PowerLineStatus.Online) {
             if (config.ManageBluetooth) bluetoothConnectedOnAc = HasConnectedBluetoothDevice();
         }
@@ -361,6 +419,19 @@ internal sealed class TrayApp : ApplicationContext {
             });
         }
         return result;
+    }
+    private void CaptureNewDisplaysForRestore() {
+        if (!active || saved == null) return;
+        if (saved.Displays == null) saved.Displays = new List<DisplayState>();
+        bool changed = false;
+        foreach (var display in CaptureDisplays()) {
+            if (saved.Displays.Any(existing => SameMonitor(existing, display))) continue;
+            saved.Displays.Add(display);
+            changed = true;
+            Log("Added newly active display to restore snapshot: " +
+                display.MonitorHardwareId + "@" + display.RefreshRate);
+        }
+        if (changed) Save(statePath, saved);
     }
     private bool SetAllDisplaysRate(int hz) {
         var displays = CaptureDisplays();
@@ -582,7 +653,7 @@ internal sealed class TrayApp : ApplicationContext {
     }
     private void Balloon(string title, string text) { tray.BalloonTipTitle = title; tray.BalloonTipText = text; tray.ShowBalloonTip(2500); }
     private void UpdateUi(string message) { status.Text = (active ? "ON — battery profile active" : "OFF — normal profile") + " · " + message; toggle.Text = active ? "Turn battery saver OFF" : "Turn battery saver ON"; automatic.Text = "Automatic on unplug / restore on plug"; tray.Text = active ? "Acer Battery Saver — ON" : "Acer Battery Saver — OFF"; }
-    protected override void ExitThreadCore() { SystemEvents.PowerModeChanged -= PowerChanged; SystemEvents.DisplaySettingsChanged -= DisplayChanged; if (displayRetryTimer != null) displayRetryTimer.Dispose(); tray.Visible = false; tray.Dispose(); base.ExitThreadCore(); }
+    protected override void ExitThreadCore() { SystemEvents.PowerModeChanged -= PowerChanged; SystemEvents.DisplaySettingsChanged -= DisplayChanged; if (powerNotifications != null) powerNotifications.Dispose(); if (displayRetryTimer != null) displayRetryTimer.Dispose(); tray.Visible = false; tray.Dispose(); base.ExitThreadCore(); }
 }
 
 internal static class Program {
