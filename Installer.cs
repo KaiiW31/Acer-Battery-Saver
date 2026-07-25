@@ -11,13 +11,13 @@ using Microsoft.Win32;
 [assembly: AssemblyDescription("Per-user installer for Acer Battery Saver")]
 [assembly: AssemblyCompany("KaiiW31")]
 [assembly: AssemblyProduct("Acer Battery Saver")]
-[assembly: AssemblyVersion("1.0.1.0")]
-[assembly: AssemblyFileVersion("1.0.1.0")]
+[assembly: AssemblyVersion("1.0.2.0")]
+[assembly: AssemblyFileVersion("1.0.2.0")]
 
 internal static class Installer {
     private const string AppName = "Acer Battery Saver";
     private const string AppId = "AcerBatterySaver";
-    private const string Version = "1.0.1";
+    private const string Version = "1.0.2";
     private const string AppResource = "AcerBatterySaver.Payload.exe";
     private const string ConfigResource = "AcerBatterySaver.DefaultConfig.json";
 

@@ -17,8 +17,8 @@ using System.Web.Script.Serialization;
 [assembly: AssemblyDescription("Automatic battery-saving tray app for Acer Predator PHN16-71")]
 [assembly: AssemblyCompany("KaiiW31")]
 [assembly: AssemblyProduct("Acer Battery Saver")]
-[assembly: AssemblyVersion("1.0.1.0")]
-[assembly: AssemblyFileVersion("1.0.1.0")]
+[assembly: AssemblyVersion("1.0.2.0")]
+[assembly: AssemblyFileVersion("1.0.2.0")]
 
 internal sealed class Config {
     public bool AutomaticSwitching = true;
@@ -188,6 +188,7 @@ internal sealed class TrayApp : ApplicationContext {
     private Config config;
     private SavedState saved;
     private bool active, transitioning, bluetoothConnectedOnAc;
+    private DateTime nextDisplayEnforcementUtc = DateTime.MinValue;
     private System.Windows.Forms.Timer poller;
 
     internal TrayApp() {
@@ -248,6 +249,10 @@ internal sealed class TrayApp : ApplicationContext {
         if (!config.AutomaticSwitching) return;
         if (line == PowerLineStatus.Offline && !active) SetActive(true, "power unplugged");
         else if (line == PowerLineStatus.Online && active) SetActive(false, "power connected");
+        else if (line == PowerLineStatus.Offline && active && DateTime.UtcNow >= nextDisplayEnforcementUtc) {
+            nextDisplayEnforcementUtc = DateTime.UtcNow.AddSeconds(15);
+            SetAllDisplaysRate(60);
+        }
         else if (line == PowerLineStatus.Online) {
             if (config.ManageBluetooth) bluetoothConnectedOnAc = HasConnectedBluetoothDevice();
         }

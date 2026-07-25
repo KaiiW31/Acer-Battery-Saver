@@ -27,6 +27,8 @@ build scripts.
 - Saves each active physical monitor independently, then changes each one to 60 Hz.
 - Restores each monitor's own previous refresh rate (for example, laptop 165 Hz
   and external monitor 144 Hz), even if Windows display topology changes temporarily.
+- Rechecks refresh rates while unplugged and retries every 15 seconds if Windows
+  temporarily rejects a display change during sign-in or startup.
 - Creates a temporary, reversible Windows power plan with:
   - CPU maximum set to 55% on battery;
   - CPU boost disabled on battery;
